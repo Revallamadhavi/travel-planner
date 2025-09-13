@@ -1,0 +1,284 @@
+/*
+Fullstack Travel Planner — Example
+
+This single-file document contains:
+  1) server.js - Minimal Express + SQLite backend (API endpoints)
+  2) Frontend: src/App.jsx - React component (default export) using Tailwind classes
+  3) package.json snippets and run instructions
+
+Goal: a simple travel-planning app you can run locally. It stores trips (destination, start/end dates, notes) and lets users add/search/edit/delete trips and view a basic itinerary.
+
+--- server.js ---
+// Save as server.js
+
+const express = require('express');
+const cors = require('cors');
+const bodyParser = require('body-parser');
+const sqlite3 = require('sqlite3').verbose();
+const path = require('path');
+
+const app = express();
+app.use(cors());
+app.use(bodyParser.json());
+
+// Simple SQLite DB in file travel.db
+const DBSOURCE = path.join(__dirname, 'travel.db');
+const db = new sqlite3.Database(DBSOURCE, (err) => {
+  if (err) {
+    console.error(err.message);
+    throw err;
+  }
+  console.log('Connected to SQLite database.');
+});
+
+// Create table if not exists
+const initSql = `
+CREATE TABLE IF NOT EXISTS trips (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  title TEXT,
+  destination TEXT,
+  start_date TEXT,
+  end_date TEXT,
+  notes TEXT
+);
+`;
+
+db.run(initSql);
+
+// API endpoints
+app.get('/api/trips', (req, res) => {
+  const q = req.query.q;
+  if (q) {
+    const sql = `SELECT * FROM trips WHERE title LIKE ? OR destination LIKE ? ORDER BY start_date`;
+    const param = `%${q}%`;
+    db.all(sql, [param, param], (err, rows) => {
+      if (err) return res.status(500).json({ error: err.message });
+      res.json(rows);
+    });
+  } else {
+    db.all('SELECT * FROM trips ORDER BY start_date', [], (err, rows) => {
+      if (err) return res.status(500).json({ error: err.message });
+      res.json(rows);
+    });
+  }
+});
+
+app.get('/api/trips/:id', (req, res) => {
+  db.get('SELECT * FROM trips WHERE id = ?', [req.params.id], (err, row) => {
+    if (err) return res.status(500).json({ error: err.message });
+    if (!row) return res.status(404).json({ error: 'Not found' });
+    res.json(row);
+  });
+});
+
+app.post('/api/trips', (req, res) => {
+  const { title, destination, start_date, end_date, notes } = req.body;
+  const sql = 'INSERT INTO trips (title, destination, start_date, end_date, notes) VALUES (?, ?, ?, ?, ?)';
+  db.run(sql, [title, destination, start_date, end_date, notes], function (err) {
+    if (err) return res.status(500).json({ error: err.message });
+    res.status(201).json({ id: this.lastID });
+  });
+});
+
+app.put('/api/trips/:id', (req, res) => {
+  const { title, destination, start_date, end_date, notes } = req.body;
+  const sql = `UPDATE trips SET title = ?, destination = ?, start_date = ?, end_date = ?, notes = ? WHERE id = ?`;
+  db.run(sql, [title, destination, start_date, end_date, notes, req.params.id], function (err) {
+    if (err) return res.status(500).json({ error: err.message });
+    res.json({ changes: this.changes });
+  });
+});
+
+app.delete('/api/trips/:id', (req, res) => {
+  db.run('DELETE FROM trips WHERE id = ?', [req.params.id], function (err) {
+    if (err) return res.status(500).json({ error: err.message });
+    res.json({ deleted: this.changes });
+  });
+});
+
+const PORT = process.env.PORT || 4000;
+app.listen(PORT, () => {
+  console.log(`Server listening on port ${PORT}`);
+});
+
+/*
+--- Frontend: src/App.jsx ---
+Create a React app with Vite or CRA. Put this file at src/App.jsx and run the dev server.
+This component uses Tailwind CSS classes. You can remove Tailwind classes if not using Tailwind.
+*/
+
+// src/App.jsx
+import React, { useEffect, useState } from 'react';
+
+export default function App() {
+  const [trips, setTrips] = useState([]);
+  const [form, setForm] = useState({ title: '', destination: '', start_date: '', end_date: '', notes: '' });
+  const [q, setQ] = useState('');
+  const [editingId, setEditingId] = useState(null);
+
+  const API = import.meta.env.VITE_API_URL || 'http://localhost:4000';
+
+  useEffect(() => {
+    fetchTrips();
+  }, []);
+
+  async function fetchTrips(search = '') {
+    const url = search ? `${API}/api/trips?q=${encodeURIComponent(search)}` : `${API}/api/trips`;
+    const res = await fetch(url);
+    const data = await res.json();
+    setTrips(data);
+  }
+
+  function handleChange(e) {
+    setForm({ ...form, [e.target.name]: e.target.value });
+  }
+
+  async function handleSubmit(e) {
+    e.preventDefault();
+    if (editingId) {
+      await fetch(`${API}/api/trips/${editingId}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(form),
+      });
+      setEditingId(null);
+    } else {
+      await fetch(`${API}/api/trips`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(form),
+      });
+    }
+    setForm({ title: '', destination: '', start_date: '', end_date: '', notes: '' });
+    fetchTrips(q);
+  }
+
+  async function handleEdit(trip) {
+    setEditingId(trip.id);
+    setForm({ title: trip.title, destination: trip.destination, start_date: trip.start_date, end_date: trip.end_date, notes: trip.notes });
+    window.scrollTo({ top: 0, behavior: 'smooth' });
+  }
+
+  async function handleDelete(id) {
+    if (!confirm('Delete this trip?')) return;
+    await fetch(`${API}/api/trips/${id}`, { method: 'DELETE' });
+    fetchTrips(q);
+  }
+
+  function prettyRange(s, e) {
+    if (!s) return '';
+    return `${s}${e ? ' — ' + e : ''}`;
+  }
+
+  return (
+    <div className="min-h-screen bg-gray-50 p-6">
+      <div className="max-w-4xl mx-auto bg-white rounded-2xl shadow p-6">
+        <h1 className="text-2xl font-bold mb-4">Travel Planner</h1>
+
+        <form onSubmit={handleSubmit} className="grid grid-cols-1 md:grid-cols-2 gap-3 mb-4">
+          <input required name="title" value={form.title} onChange={handleChange} placeholder="Trip title (e.g., Honeymoon)" className="p-2 border rounded" />
+          <input required name="destination" value={form.destination} onChange={handleChange} placeholder="Destination (City, Country)" className="p-2 border rounded" />
+          <input name="start_date" value={form.start_date} onChange={handleChange} type="date" className="p-2 border rounded" />
+          <input name="end_date" value={form.end_date} onChange={handleChange} type="date" className="p-2 border rounded" />
+          <textarea name="notes" value={form.notes} onChange={handleChange} placeholder="Notes / itinerary" className="col-span-1 md:col-span-2 p-2 border rounded" />
+          <div className="col-span-1 md:col-span-2 flex gap-2">
+            <button type="submit" className="px-4 py-2 bg-blue-600 text-white rounded">{editingId ? 'Update Trip' : 'Add Trip'}</button>
+            <button type="button" onClick={() => { setForm({ title: '', destination: '', start_date: '', end_date: '', notes: '' }); setEditingId(null); }} className="px-4 py-2 border rounded">Clear</button>
+          </div>
+        </form>
+
+        <div className="mb-4 flex gap-2">
+          <input placeholder="Search trips" value={q} onChange={(e) => setQ(e.target.value)} className="p-2 border rounded flex-1" />
+          <button onClick={() => fetchTrips(q)} className="px-4 py-2 border rounded">Search</button>
+          <button onClick={() => { setQ(''); fetchTrips(); }} className="px-4 py-2 border rounded">Reset</button>
+        </div>
+
+        <div>
+          {trips.length === 0 ? (
+            <p className="text-gray-500">No trips yet. Add your first trip!</p>
+          ) : (
+            <ul className="space-y-3">
+              {trips.map((t) => (
+                <li key={t.id} className="p-3 border rounded flex justify-between items-start">
+                  <div>
+                    <div className="font-semibold text-lg">{t.title} <span className="text-sm text-gray-500">— {t.destination}</span></div>
+                    <div className="text-sm text-gray-600">{prettyRange(t.start_date, t.end_date)}</div>
+                    <div className="mt-2 whitespace-pre-wrap text-sm">{t.notes}</div>
+                  </div>
+                  <div className="flex flex-col gap-2 ml-4">
+                    <button onClick={() => handleEdit(t)} className="px-3 py-1 border rounded">Edit</button>
+                    <button onClick={() => handleDelete(t.id)} className="px-3 py-1 border rounded">Delete</button>
+                  </div>
+                </li>
+              ))}
+            </ul>
+          )}
+        </div>
+
+      </div>
+    </div>
+  );
+}
+
+/*
+--- package.json snippets ---
+
+// Backend package.json (server)
+{
+  "name": "travel-server",
+  "version": "1.0.0",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "dependencies": {
+    "express": "^4.18.2",
+    "cors": "^2.8.5",
+    "body-parser": "^1.20.2",
+    "sqlite3": "^5.1.6"
+  }
+}
+
+// Frontend (Vite + React) package.json using Vite
+{
+  "name": "travel-frontend",
+  "version": "1.0.0",
+  "private": true,
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview"
+  },
+  "dependencies": {
+    "react": "^18.2.0",
+    "react-dom": "^18.2.0"
+  }
+}
+
+--- Run instructions ---
+1) Backend:
+   - mkdir server && cd server
+   - npm init -y
+   - npm install express cors body-parser sqlite3
+   - Place server.js from above
+   - node server.js
+
+2) Frontend (Vite):
+   - npm create vite@latest travel-frontend -- --template react
+   - cd travel-frontend
+   - Replace src/App.jsx with the App.jsx content above
+   - npm install
+   - (optional) install Tailwind CSS if you want the same look
+   - npm run dev
+
+Set VITE_API_URL if your server isn't at localhost:4000.
+
+--- Suggestions to extend ---
+- Add authentication (JWT) and per-user trips
+- Use Postgres or MongoDB instead of SQLite for production
+- Add image uploads for destinations
+- Integrate external APIs (Google Places, Skyscanner, weather)
+- Add calendar sync / ICS export
+
+Enjoy! Tell me which parts you'd like expanded (auth, deployment, or adding maps + external APIs).
+*/
